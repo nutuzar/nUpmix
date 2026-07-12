@@ -514,7 +514,7 @@ class FFmpegWorker(QThread):
             # Senkron zırhı ve son örnekleme tek satırda birleştirildi
             post_pan_filters.append("aresample=48000:async=1000")
 
-            cmd = ["ffmpeg", "-y"]
+            cmd = ["ffmpeg", "-y", "-fflags", "+genpts"]
             
             if is_preview:
                 cmd.extend(["-ss", str(mid_duration), "-t", "15"])
@@ -648,7 +648,7 @@ class FFmpegWorker(QThread):
             else:
                 cmd.extend(["-c:v", "copy"])
 
-            cmd.extend(["-c:a", acodec, "-b:a", abitrate, "-ar", "48000", "-map_metadata", "0"])
+            cmd.extend(["-c:a", acodec, "-b:a", abitrate, "-ar", "48000", "-map_metadata", "0", "-avoid_negative_ts", "make_zero"])
             cmd.append(str(out_file))
 
             self.file_status_update.emit(f"İşleniyor: {path_obj.name}")
@@ -685,7 +685,50 @@ class FFmpegWorker(QThread):
                     return True, f"[~] Önizleme Hazır: {out_file.name}"
                 return True, f"[+] Başarılı: {path_obj.name}"
             else:
-                self.console_log_update.emit(f"FFmpeg Code {process.returncode}: {last_err_line[-80:]}")
+                if not is_preview:
+                    self.console_log_update.emit(f"[!] Zaman Damgası/Kopya Hatası ({path_obj.name}). Oto-Onarım (Re-encode) devrede...")
+                    try:
+                        idx = cmd.index("-c:v")
+                        if cmd[idx+1] == "copy":
+                            cmd.pop(idx+1)
+                            cmd.pop(idx)
+                            if use_nvenc:
+                                cmd.extend(["-c:v", "h264_nvenc", "-preset", "fast", "-cq", "28"])
+                            else:
+                                cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "28"])
+                            
+                            self.file_status_update.emit(f"Onarılıyor: {path_obj.name}")
+                            
+                            kwargs = {}
+                            if platform.system() == "Windows":
+                                si = subprocess.STARTUPINFO()
+                                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                                kwargs['startupinfo'] = si
+                                
+                            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, **kwargs)
+                            self.active_processes.append(process)
+                            
+                            while True:
+                                line = process.stderr.readline()
+                                if not line and process.poll() is not None:
+                                    break
+                                if line:
+                                    last_err_line = line.strip()
+                                    
+                            if process in self.active_processes:
+                                self.active_processes.remove(process)
+                                
+                            if process.returncode == 0:
+                                return True, f"[+] Başarılı (Oto-Onarım): {path_obj.name}"
+                    except Exception as e:
+                        pass
+                
+                try:
+                    with open("nUpmix_error.log", "a", encoding="utf-8") as lf:
+                        lf.write(f"\n--- HATA: {path_obj.name} ---\nFFmpeg Kodu: {process.returncode}\nSon Satır: {last_err_line}\n")
+                except: pass
+                
+                self.console_log_update.emit(f"FFmpeg Hatası ({process.returncode}): Hata detayı için nUpmix_error.log dosyasına bakınız.")
                 return False, f"[-] FFmpeg Hatası ({path_obj.name})"
                 
         except Exception as e:
