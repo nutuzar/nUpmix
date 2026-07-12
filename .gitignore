@@ -1,0 +1,11 @@
+# Python derleme artıkları
+__pycache__/
+*.pyc
+
+# PyInstaller üretim klasörleri
+build/
+dist/
+*.spec
+
+# Yanlışlıkla ana klasöre düşebilecek binary'ler
+*.exe
